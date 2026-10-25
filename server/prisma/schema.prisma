@@ -1,0 +1,217 @@
+// Prisma Schema for ResolvePay
+// Financial Complaint Management System (Synthetic / Demo Data Only)
+// Modern Prisma 7 configuration: Connection URLs are maintained in prisma.config.ts
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==============================================================================
+// Enums
+// ==============================================================================
+
+enum Role {
+  CUSTOMER
+  AGENT
+  TEAM_LEAD
+  ADMIN
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum ComplaintStatus {
+  SUBMITTED
+  TRIAGED
+  ASSIGNED
+  IN_PROGRESS
+  WAITING_FOR_CUSTOMER
+  RESOLVED
+  CLOSED
+  REOPENED
+}
+
+enum MessageVisibility {
+  CUSTOMER_VISIBLE
+  INTERNAL
+}
+
+// ==============================================================================
+// Models
+// ==============================================================================
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(CUSTOMER)
+  teamId       String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  // Relations
+  team                Team?              @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  submittedComplaints Complaint[]        @relation("CustomerComplaints")
+  assignedComplaints  Complaint[]        @relation("AssigneeComplaints")
+  messages            ComplaintMessage[]
+  assignmentsCreated  Assignment[]       @relation("AssignedByUser")
+  assignmentsReceived Assignment[]       @relation("AssigneeUser")
+  auditLogs           AuditLog[]
+
+  @@index([role])
+  @@index([teamId])
+  @@index([email])
+}
+
+model Team {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  // Relations
+  members           User[]
+  complaints        Complaint[]
+  defaultCategories Category[]
+  assignments       Assignment[]
+}
+
+model Category {
+  id              String   @id @default(uuid())
+  name            String   @unique
+  defaultTeamId   String?
+  defaultPriority Priority @default(NORMAL)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  // Relations
+  defaultTeam Team?        @relation(fields: [defaultTeamId], references: [id], onDelete: SetNull)
+  complaints  Complaint[]
+  slaPolicies SlaPolicy[]
+
+  @@index([defaultTeamId])
+}
+
+model Complaint {
+  id                   String          @id @default(uuid())
+  publicRef            String          @unique // e.g. RP-104928 (non-sequential, public-facing)
+  customerId           String
+  categoryId           String
+  subject              String
+  description          String
+  transactionReference String?
+  channel              String          @default("WEB") // WEB, MOBILE, EMAIL, PHONE, IN_PERSON
+  priority             Priority        @default(NORMAL)
+  status               ComplaintStatus @default(SUBMITTED)
+  teamId               String?
+  assigneeId           String?
+  resolutionCode       String?
+  resolutionSummary    String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  dueAt                DateTime?
+  resolvedAt           DateTime?
+
+  // Relations (Named where User is referenced more than once)
+  customer   User               @relation("CustomerComplaints", fields: [customerId], references: [id], onDelete: Restrict)
+  category   Category           @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  team       Team?              @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  assignee   User?              @relation("AssigneeComplaints", fields: [assigneeId], references: [id], onDelete: SetNull)
+  messages   ComplaintMessage[]
+  assignments Assignment[]
+
+  // Indexes as required for high-frequency queries and filtering
+  @@index([status])
+  @@index([priority])
+  @@index([teamId])
+  @@index([assigneeId])
+  @@index([categoryId])
+  @@index([createdAt])
+  @@index([dueAt])
+  @@index([customerId])
+}
+
+model ComplaintMessage {
+  id          String            @id @default(uuid())
+  complaintId String
+  authorId    String
+  body        String
+  visibility  MessageVisibility @default(CUSTOMER_VISIBLE)
+  createdAt   DateTime          @default(now())
+
+  // Relations
+  complaint Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([complaintId])
+  @@index([authorId])
+  @@index([createdAt])
+}
+
+model Assignment {
+  id           String   @id @default(uuid())
+  complaintId  String
+  teamId       String
+  assigneeId   String?
+  assignedById String
+  reason       String
+  assignedAt   DateTime @default(now())
+
+  // Relations (Named where User is referenced more than once)
+  complaint  Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  team       Team      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  assignee   User?     @relation("AssigneeUser", fields: [assigneeId], references: [id], onDelete: SetNull)
+  assignedBy User      @relation("AssignedByUser", fields: [assignedById], references: [id], onDelete: Restrict)
+
+  @@index([complaintId])
+  @@index([teamId])
+  @@index([assigneeId])
+  @@index([assignedById])
+  @@index([assignedAt])
+}
+
+model SlaPolicy {
+  id                   String   @id @default(uuid())
+  categoryId           String
+  priority             Priority
+  firstResponseMinutes Int
+  resolutionMinutes    Int
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  // Relations
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  // One policy per category and priority combination
+  @@unique([categoryId, priority])
+  @@index([categoryId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  entityType String   // e.g. "Complaint", "Assignment", "SlaPolicy", "User"
+  entityId   String
+  action     String   // e.g. "STATUS_CHANGE", "ASSIGNED", "NOTE_ADDED"
+  summary    String
+  requestId  String?
+  createdAt  DateTime @default(now())
+
+  // Relations
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+}
